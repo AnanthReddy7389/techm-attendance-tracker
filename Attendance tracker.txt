@@ -1,0 +1,199 @@
+06.04 1:49 PM
+Employee Attendance Tracker
+Project Overview
+✨ Features
+Employees mark attendance once per day.
+
+Managers view reports: individual attendance summary, department-wise summary.
+
+REST API with secure role-based access:
+
+ROLE_EMPLOYEE: Can mark/view their own attendance.
+
+ROLE_MANAGER: Can view all attendance records and summaries.
+
+
+
+1. Entities
+ Employee.java
+
+@Entity
+public class Employee {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long employeeId;
+
+    private String name;
+    private String department;
+    private String designation;
+
+    @Column(unique = true)
+    private String username;
+
+    private String password;  // Hashed in real application
+
+    private String role;  // ROLE_EMPLOYEE, ROLE_MANAGER
+
+    // Getters and Setters
+}
+
+
+ Attendance.java
+@Entity
+public class Attendance {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long attendanceId;
+
+    @ManyToOne
+    @JoinColumn(name = "employee_id")
+    private Employee employee;
+
+    private LocalDate date;
+
+    @Enumerated(EnumType.STRING)
+    private Status status; // Enum: PRESENT, ABSENT
+}
+public enum Status {
+    PRESENT, ABSENT
+}
+
+
+ 2. Repositories
+public interface EmployeeRepository extends JpaRepository<Employee, Long> {
+    Optional<Employee> findByUsername(String username);
+}
+
+public interface AttendanceRepository extends JpaRepository<Attendance, Long> {
+    List<Attendance> findByEmployee(Employee employee);
+    List<Attendance> findByEmployeeAndDateBetween(Employee employee, LocalDate start, LocalDate end);
+
+    @Query("SELECT a.employee.department, COUNT(a) FROM Attendance a WHERE a.status = 'PRESENT' GROUP BY a.employee.department")
+    List<Object[]> getDepartmentWiseSummary();
+}
+
+
+ 3. Service Layer
+@Service
+public class AttendanceService {
+
+    @Autowired
+    private AttendanceRepository attendanceRepo;
+
+    @Autowired
+    private EmployeeRepository employeeRepo;
+
+    public Attendance markAttendance(String username, Status status) {
+        Employee emp = employeeRepo.findByUsername(username).orElseThrow();
+        LocalDate today = LocalDate.now();
+        boolean alreadyMarked = attendanceRepo.existsByEmployeeAndDate(emp, today);
+        if (alreadyMarked) throw new RuntimeException("Attendance already marked");
+
+        Attendance attendance = new Attendance();
+        attendance.setEmployee(emp);
+        attendance.setDate(today);
+        attendance.setStatus(status);
+        return attendanceRepo.save(attendance);
+    }
+
+    public List<Attendance> getMyAttendance(String username) {
+        Employee emp = employeeRepo.findByUsername(username).orElseThrow();
+        return attendanceRepo.findByEmployee(emp);
+    }
+
+    public List<Object[]> getDepartmentSummary() {
+        return attendanceRepo.getDepartmentWiseSummary();
+    }
+}
+
+
+ 4. Controller Layer
+@RestController
+@RequestMapping("/api/attendance")
+public class AttendanceController {
+
+    @Autowired
+    private AttendanceService service;
+
+    @PreAuthorize("hasRole('EMPLOYEE')")
+    @PostMapping("/mark")
+    public ResponseEntity<Attendance> mark(@RequestParam Status status, Principal principal) {
+        return ResponseEntity.ok(service.markAttendance(principal.getName(), status));
+    }
+
+    @PreAuthorize("hasRole('EMPLOYEE')")
+    @GetMapping("/my")
+    public ResponseEntity<List<Attendance>> getMine(Principal principal) {
+        return ResponseEntity.ok(service.getMyAttendance(principal.getName()));
+    }
+
+    @PreAuthorize("hasRole('MANAGER')")
+    @GetMapping("/department-summary")
+    public ResponseEntity<List<Object[]>> getDeptSummary() {
+        return ResponseEntity.ok(service.getDepartmentSummary());
+    }
+}
+
+5. Security Configuration
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    @Autowired
+    private EmployeeRepository employeeRepo;
+
+    @Bean
+    public UserDetailsService userDetailsService() {
+        return username -> {
+            Employee emp = employeeRepo.findByUsername(username)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found"));
+            return User.builder()
+                    .username(emp.getUsername())
+                    .password("{noop}" + emp.getPassword()) // Use encoder in real app
+                    .roles(emp.getRole().replace("ROLE_", ""))
+                    .build();
+        };
+    }
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http.csrf().disable()
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/api/attendance/**").authenticated()
+                .anyRequest().permitAll()
+            )
+            .httpBasic();
+        return http.build();
+    }
+}
+
+6. PostgreSQL Configuration
+application.properties
+
+spring.datasource.url=jdbc:postgresql://localhost:5432/attendance_db
+spring.datasource.username=postgres
+spring.datasource.password=yourpassword
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+
+
+
+ 7. Testing Use Cases
+
+Endpoint	Method	Role	Function
+/api/attendance/mark?status=PRESENT	POST	EMPLOYEE	Mark today's attendance
+/api/attendance/my	GET	EMPLOYEE	View own attendance
+/api/attendance/department-summary	GET	MANAGER	Get department attendance summary
+
+
+
+
+
+
+
+
+
+
+
+
